@@ -18,11 +18,70 @@
       async function toggleVisor() {
         tfvis.visor().toggle();
       }
-      async function predict() {}
+      async function predict() {
+        const predictionInput = parseInt(
+          document.getElementById("prediction-input").value
+        );
+        if (isNaN(predictionInput)) {
+          alert("Please enter a valid number");
+        } else {
+          tf.tidy(() => {
+            const inputTensor = tf.tensor1d([predictionInput]);
+            const normalizedInput = normalise(
+              inputTensor,
+              normalisedFeature.min,
+              normalisedFeature.max
+            );
+            const normalizedPredict = model.predict(normalizedInput.tensor);
+            const outputTensor = denormalise(
+              normalizedPredict,
+              normalisedLabel.min,
+              normalisedLabel.max
+            );
+            const [outputValue] = outputTensor.dataSync();
+            document.getElementById(
+              "prediction-output"
+            ).innerHTML = `The predicted house price is <br> <span style="font-size: 2em">\$${(
+              parseFloat((outputValue / 1000).toFixed(2)) * 1000
+            )
+              .toFixed(2)
+              .replace(".", ",")}</span>`;
+          });
+        }
+      }
 
-      async function load() {}
-      async function save() {}
-      async function save() {}
+      async function load() {
+        const localStorageKey = `localstorage://${storageId}`;
+        const models = await tf.io.listModels();
+        const modelInfo = models[localStorageKey];
+        if (modelInfo) {
+          model = await tf.loadLayersModel(localStorageKey);
+          tfvis.show.modelSummary({ name: "Model summary" }, model);
+          const layer = model.getLayer(undefined, 0);
+          tfvis.show.layer({ name: "Layer 1" }, layer);
+          await plotPredictionLine();
+          document.getElementById(
+            "model-status"
+          ).innerHTML = `Trained (saved ${modelInfo.dateSaved})`;
+          document.getElementById("test-button").removeAttribute("disabled");
+          document.getElementById("predict-button").removeAttribute("disabled");
+        } else {
+          alert("Could not load: no saved model found");
+        }
+      }
+      const storageId = "kc-house-price-regression";
+      async function save() {
+        const saveResults = await model.save(`localstorage://${storageId}`);
+
+        document.getElementById(
+          "model-status"
+        ).innerHTML = `Trained (saved ${saveResults.modelArtifactsInfo.dateSaved})`;
+
+        // Demais opções de salvar
+        // await model.save(`indexeddb://${storageId}`);
+        // await model.save(`downloads://${storageId}`);
+        // await model.save('http://my-server/model/upload');
+      }
       async function test() {
         const lossTensor = model.evaluate(
           testingFeatureTensor,
@@ -47,7 +106,7 @@
         tfvis.show.modelSummary({ name: "Model summary" }, model);
         const layer = model.getLayer(undefined, 0);
         tfvis.show.layer({ name: "Layer 1" }, layer);
-
+        await plotPredictionLine();
         const result = await trainModel(
           model,
           trainingFeatureTensor,
@@ -64,11 +123,39 @@
           `Loss: ${trainingLoss.toPrecision(5)}\n` +
           `Validation Loss: ${validationLoss.toPrecision(5)}`;
         document.getElementById("test-button").removeAttribute("disabled");
+        document.getElementById("save-button").removeAttribute("disabled");
       }
-      async function plot(pointsArray, featureName) {
+      async function plotPredictionLine() {
+        const [xs, ys] = tf.tidy(() => {
+          const normalisedxs = tf.linspace(0, 1, 100);
+          const normalisedys = model.predict(normalisedxs.reshape([100, 1]));
+          const xs = denormalise(
+            normalisedxs,
+            normalisedFeature.min,
+            normalisedFeature.max
+          );
+          const ys = denormalise(
+            normalisedys,
+            normalisedLabel.min,
+            normalisedLabel.max
+          );
+          return [xs.dataSync(), ys.dataSync()];
+        });
+        const predictedPoints = Array.from(xs).map((val, index) => {
+          return { x: val, y: ys[index] };
+        });
+        plot(points, "Square feet", predictedPoints);
+      }
+      async function plot(pointsArray, featureName, predictedPoints = null) {
+        const values = [pointsArray];
+        const series = ["original"];
+        if (Array.isArray(predictedPoints)) {
+          values.push(predictedPoints);
+          series.push("predicted");
+        }
         tfvis.render.scatterplot(
           { name: `${featureName} vs House Price` },
-          { values: [pointsArray], series: ["original"] },
+          { values, series },
           {
             xLabel: featureName,
             yLabel: "Price",
@@ -76,9 +163,9 @@
         );
       }
 
-      function normalise(tensor) {
-        const min = tensor.min();
-        const max = tensor.max();
+      function normalise(tensor, previousMin = null, previousMax = null) {
+        const min = previousMin || tensor.min();
+        const max = previousMax || tensor.max();
         const normalisedTensor = tensor.sub(min).div(max.sub(min));
         return {
           tensor: normalisedTensor,
@@ -136,7 +223,8 @@
       let trainingFeatureTensor,
         testingFeatureTensor,
         trainingLabelTensor,
-        testingLabelTensor;
+        testingLabelTensor,
+        points;
       async function run() {
         // Import from CSV
         const houseSalesDataset = tf.data.csv(
@@ -148,7 +236,7 @@
           x: record.sqft_living,
           y: record.price,
         }));
-        const points = await pointsDataset.toArray();
+        points = await pointsDataset.toArray();
         if (points.length % 2 !== 0) {
           // If odd number of elements
           points.pop(); // remove one element
@@ -185,6 +273,7 @@
 
         document.getElementById("model-status").innerHTML = "No Model Trained";
         document.getElementById("train-button").removeAttribute("disabled");
+        document.getElementById("load-button").removeAttribute("disabled");
       }
 
       run();
